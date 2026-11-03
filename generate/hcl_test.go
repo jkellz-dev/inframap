@@ -4,8 +4,10 @@ import (
 	"testing"
 
 	"github.com/spf13/afero"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/cycloidio/inframap/errcode"
 	"github.com/cycloidio/inframap/generate"
 	"github.com/cycloidio/inframap/graph"
 )
@@ -205,5 +207,72 @@ func TestFromHCL_Module(t *testing.T) {
 		}
 
 		assertEqualGraph(t, eg, g, cfg)
+	})
+}
+
+func TestFromHCL_ModernLanguageFeatures(t *testing.T) {
+	fs := afero.NewOsFs()
+
+	g, _, err := generate.FromHCL(fs, "./testdata/tf-modern/", generate.Options{Raw: true})
+	require.NoError(t, err)
+	require.NotNil(t, g)
+
+	bucket, err := g.GetNodeByCanonical("aws_s3_bucket.logs")
+	require.NoError(t, err)
+	policy, err := g.GetNodeByCanonical("aws_s3_bucket_policy.logs")
+	require.NoError(t, err)
+
+	edges := g.GetEdgesForNode(policy.ID)
+	require.Len(t, edges, 1)
+	assert.ElementsMatch(t, []string{bucket.ID, policy.ID}, []string{edges[0].Source, edges[0].Target})
+}
+
+func TestFromHCL_LoaderEdgeCases(t *testing.T) {
+	const (
+		bucket = "resource \"aws_s3_bucket\" \"a\" {\n  bucket = \"x\"\n}\n"
+		policy = "resource \"aws_s3_bucket_policy\" \"a\" {\n  bucket = aws_s3_bucket.a.id\n}\n"
+	)
+	newFs := func(t *testing.T, files map[string]string) afero.Fs {
+		fs := afero.NewMemMapFs()
+		for name, src := range files {
+			require.NoError(t, afero.WriteFile(fs, "mod/"+name, []byte(src), 0o644))
+		}
+		return fs
+	}
+
+	t.Run("OverrideFilesKeepBaseLinks", func(t *testing.T) {
+		fs := newFs(t, map[string]string{
+			"main.tf":          bucket + policy,
+			"main_override.tf": "resource \"aws_s3_bucket_policy\" \"a\" {\n  policy = \"{}\"\n}\n",
+			"override.tf":      "resource \"aws_s3_bucket\" \"a\" {\n  bucket = \"y\"\n}\n",
+		})
+
+		g, _, err := generate.FromHCL(fs, "mod", generate.Options{Raw: true})
+		require.NoError(t, err)
+
+		p, err := g.GetNodeByCanonical("aws_s3_bucket_policy.a")
+		require.NoError(t, err)
+		assert.Len(t, g.GetEdgesForNode(p.ID), 1)
+	})
+
+	t.Run("DuplicateResourceAcrossFiles", func(t *testing.T) {
+		fs := newFs(t, map[string]string{"a.tf": bucket, "b.tf": bucket})
+
+		_, _, err := generate.FromHCL(fs, "mod", generate.Options{Raw: true})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `duplicate resource "aws_s3_bucket.a"`)
+	})
+
+	t.Run("JSONConfigurationIsRejected", func(t *testing.T) {
+		fs := newFs(t, map[string]string{
+			"main.tf":       policy,
+			"extra.tf.json": `{"resource":{"aws_s3_bucket":{"a":{"bucket":"x"}}}}`,
+		})
+
+		_, _, err := generate.FromHCL(fs, "mod", generate.Options{Raw: true})
+		assert.ErrorIs(t, err, errcode.ErrGenerateFromJSON)
+
+		_, _, err = generate.FromHCL(fs, "mod/extra.tf.json", generate.Options{Raw: true})
+		assert.ErrorIs(t, err, errcode.ErrGenerateFromJSON)
 	})
 }

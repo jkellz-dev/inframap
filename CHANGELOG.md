@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+### Fixed
+
+- HCL parsing no longer fails on Terraform 1.2+ language features (`import`, `moved`, `removed`, `check`, lifecycle `precondition`/`postcondition`, free-form validation messages)
+  ([Issue #242](https://github.com/cycloidio/inframap/issues/242))
+
 ## [0.7.0] _2024-06-05_
 
 ### Added

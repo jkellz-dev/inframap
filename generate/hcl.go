@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
-	"github.com/hashicorp/terraform/configs"
 	"github.com/hashicorp/terraform/configs/hcl2shim"
 	uuid "github.com/satori/go.uuid"
 	"github.com/spf13/afero"
@@ -21,29 +19,12 @@ import (
 // FromHCL generates a new graph from the HCL on the path,
 // it can be a file or a Module/Dir
 func FromHCL(fs afero.Fs, path string, opt Options) (*graph.Graph, map[string]interface{}, error) {
-	parser := configs.NewParser(fs)
+	mod, err := loadResources(fs, path)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	g := graph.New()
-
-	var (
-		mod   *configs.Module
-		diags hcl.Diagnostics
-		err   error
-	)
-
-	if parser.IsConfigDir(path) {
-		mod, diags = parser.LoadConfigDir(path)
-	} else {
-		f, dgs := parser.LoadConfigFile(path)
-		if dgs.HasErrors() {
-			return nil, nil, errors.New(dgs.Error())
-		}
-		mod, diags = configs.NewModule([]*configs.File{f}, nil)
-	}
-
-	if diags.HasErrors() {
-		return nil, nil, errors.New(diags.Error())
-	}
 
 	// nodeCanIDs holds as key the `aws_alb.front` (graph.Node.Canonical)
 	// and as value the UUID (graph.Node.ID) we give to it
@@ -264,7 +245,7 @@ func getBodyJSON(b *hclsyntax.Body) map[string]interface{} {
 
 // checkHCLProviders checks if we support any of the Providers from f, if not it'll set
 // the opt.Raw to true so it can be used with Raw instead of returning an empty Graph
-func checkHCLProviders(mod *configs.Module, opt Options) (Options, error) {
+func checkHCLProviders(mod *resourceSet, opt Options) (Options, error) {
 	for rk := range mod.ManagedResources {
 		_, _, err := getProviderAndResource(rk, opt)
 		if err != nil {
